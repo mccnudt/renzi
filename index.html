@@ -648,6 +648,7 @@ function vWrite(bookId, ui, li, query){
     st.writer.quiz({
       leniency,
       showHintAfterMisses: 1,
+      highlightOnComplete: false,
       onCorrectStroke: (d)=>{
         st.strokeCur = d.strokeNum+1;
         renderDots();
@@ -673,7 +674,9 @@ function vWrite(bookId, ui, li, query){
         if(totalM>0) addWrong(st.char,'write',{bookId,ui,li});
         const starStr = '⭐'.repeat(stars)+'☆'.repeat(3-stars);
         const msg = totalM===0? '零错误，完美！':(totalM<=2? '非常棒，就差一点点！':'完成！多练几遍更棒');
-        setFB('');
+        // 隐藏进度点和书写工具，保留田字格里写好的字
+        $$('.stroke-dots, .write-tools').forEach(el=>el.style.display='none');
+        setFB(msg+'  对照田字格看看自己写的字～','good');
         const wrap = $('.writer-stage');
         const banner = document.createElement('div');
         banner.className='result-banner';
@@ -682,7 +685,7 @@ function vWrite(bookId, ui, li, query){
           <div class="sub">「${st.char}」共 ${st.strokeTotal} 笔 · 本次错误 ${totalM} 次</div>
           <button class="btn green" id="btn-next">${st.idx+1>=queue.length?'完成 🎉':'下一个字 →'}</button>
           <button class="btn ghost small" id="btn-again" style="margin-left:8px">↺ 再写一遍</button>`;
-        wrap.replaceWith(banner);
+        wrap.after(banner);
         $('#btn-next').onclick = ()=>{ st.idx++; renderCurrent(); };
         $('#btn-again').onclick = ()=>{ st.results.pop(); renderCurrent(); };
         speak(totalM===0?'太棒了':'真不错');
@@ -756,7 +759,7 @@ function vDict(bookId, ui, li){
     cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
     const ctx=cv.getContext('2d');
     ctx.scale(dpr,dpr);
-    ctx.lineWidth=7; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#2b2b2b';
+    ctx.lineWidth=11; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#2b2b2b';
     let drawing=false, last=null;
     const pos=(e)=>{ const r=cv.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; };
     const start=(e)=>{ e.preventDefault(); drawing=true; last=pos(e); try{cv.setPointerCapture(e.pointerId);}catch(_){} };
