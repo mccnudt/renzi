@@ -131,6 +131,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
 /* 写一写 */
 .write-wrap{max-width:480px;margin:0 auto;text-align:center}
 .writer-stage{background:#fff;border-radius:18px;box-shadow:0 4px 16px rgba(214,158,86,.2);padding:10px;display:inline-block;position:relative}
+.writer-stage canvas{position:absolute;inset:10px;width:calc(100% - 20px);height:calc(100% - 20px);touch-action:none;cursor:crosshair;z-index:3;background:transparent}
 .writer-stage .tian-bg{position:absolute;inset:10px;pointer-events:none;border:2.5px solid #3a3a3a;border-radius:8px;
   background-image:
    linear-gradient(to right,transparent calc(50% - .6px),#d5cdbf 50%,transparent calc(50% + .6px)),
@@ -304,6 +305,19 @@ function frameSVG(char, n, size=32){
   return `<svg viewBox="0 0 1024 1024" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg"><g transform="matrix(1 0 0 -1 0 1024)">${paths}</g></svg>`;
 }
 function frameCount(char){ const d=HANZI_DATA[char]; return d? d.strokes.length : 0; }
+/* 检测孩子手写的笔迹是否匹配某笔的笔顺中线：笔迹要覆盖整笔路径，且起笔/收笔方向正确 */
+function matchStroke(pts, median, R){
+  if(!pts||!median||pts.length<3||median.length<2) return false;
+  const step = Math.max(1, Math.floor(median.length/20));
+  for(let j=0;j<median.length;j+=step){
+    const m = median[j]; let covered=false;
+    for(const p of pts){ if(Math.hypot(p.x-m.x,p.y-m.y)<=R){covered=true;break;} }
+    if(!covered) return false;
+  }
+  if(Math.hypot(pts[0].x-median[0].x, pts[0].y-median[0].y) > R*1.8) return false;
+  if(Math.hypot(pts[pts.length-1].x-median[median.length-1].x, pts[pts.length-1].y-median[median.length-1].y) > R*1.8) return false;
+  return true;
+}
 
 /* ---------- 学习进度 ---------- */
 function getProg(){ try{ return JSON.parse(localStorage.getItem('hz_prog')||'{}'); }catch(e){ return {}; } }
@@ -615,6 +629,7 @@ function vWrite(bookId, ui, li, query){
       <div class="writer-stage">
         <div class="tian-bg"></div>
         <div id="quiz-target"></div>
+        <canvas id="write-canvas"></canvas>
       </div>
       <div class="stroke-dots" id="stroke-dots"></div>
       <div class="feedback" id="fb">按笔顺，跟着闪亮的笔画，一笔一笔写 ✍️</div>
@@ -642,72 +657,106 @@ function vWrite(bookId, ui, li, query){
   function setFB(text, cls=''){ const f=$('#fb'); if(f){ f.textContent=text; f.className='feedback '+cls; } }
 
   function startQuiz(){
+    // HanziWriter 只负责显示描红轮廓 + 每笔闪烁提示（不再用它做检测，也不显示标准字）
     const target = $('#quiz-target');
-    st.writer = makeWriter(target, st.char, {showOutline:true});
+    st.writer = makeWriter(target, st.char, {showOutline:true, showCharacter:false});
     st.quizOn = true;
-    st.writer.quiz({
-      leniency,
-      showHintAfterMisses: 1,
-      highlightOnComplete: false,
-      onCorrectStroke: (d)=>{
-        st.strokeCur = d.strokeNum+1;
-        renderDots();
-        setFB(praise[Math.floor(Math.random()*praise.length)]+'  第'+(d.strokeNum+1)+'笔正确','good');
-        // 写对一笔后，主动高亮提示下一笔（沿笔画路径闪亮，含运笔方向）
-        if(d.strokeNum < st.strokeTotal-1){
-          setTimeout(()=>{ try{ st.writer.highlightStroke(d.strokeNum+1); }catch(e){} }, 60);
-        }
-      },
-      onMistake: (d)=>{
-        st.mistakes += 1;
-        setFB(cheer[Math.min(d.mistakes-1, cheer.length-1)], 'bad');
-        const dots=$$('#stroke-dots .sdot');
-        const cur = dots[d.strokeNum];
-        if(cur){ cur.classList.add('err'); setTimeout(()=>cur.classList.remove('err'), 600); }
-      },
-      onComplete: (d)=>{
-        st.quizOn = false;
-        const totalM = d.totalMistakes;
-        const stars = totalM===0?3:(totalM<=2?2:1);
-        st.results.push({char:st.char, stars, mistakes:totalM});
-        markWrite(st.char, stars);
-        if(totalM>0) addWrong(st.char,'write',{bookId,ui,li});
-        const starStr = '⭐'.repeat(stars)+'☆'.repeat(3-stars);
-        const msg = totalM===0? '零错误，完美！':(totalM<=2? '非常棒，就差一点点！':'完成！多练几遍更棒');
-        // 隐藏进度点和书写工具，保留田字格里写好的字
-        $$('.stroke-dots, .write-tools').forEach(el=>el.style.display='none');
-        setFB(msg+'  对照田字格看看自己写的字～','good');
-        const wrap = $('.writer-stage');
-        const banner = document.createElement('div');
-        banner.className='result-banner';
-        banner.innerHTML = `<div class="stars">${starStr}</div>
-          <div class="msg">${msg}</div>
-          <div class="sub">「${st.char}」共 ${st.strokeTotal} 笔 · 本次错误 ${totalM} 次</div>
-          <button class="btn green" id="btn-next">${st.idx+1>=queue.length?'完成 🎉':'下一个字 →'}</button>
-          <button class="btn ghost small" id="btn-again" style="margin-left:8px">↺ 再写一遍</button>`;
-        wrap.after(banner);
-        $('#btn-next').onclick = ()=>{ st.idx++; renderCurrent(); };
-        $('#btn-again').onclick = ()=>{ st.results.pop(); renderCurrent(); };
-        speak(totalM===0?'太棒了':'真不错');
-      }
-    });
-    // 进入写字后主动提示第 1 笔（沿笔画路径闪亮，含运笔方向）
+    st.doneStrokes = [];   // 已通过并保留的笔迹
+    st.curPts = [];        // 当前这一笔的笔迹点
+    const cv = $('#write-canvas');
+    if(cv){
+      const r = cv.getBoundingClientRect();
+      st.W = r.width; st.H = r.height;
+      const dpr = window.devicePixelRatio||1;
+      cv.width = Math.round(st.W*dpr); cv.height = Math.round(st.H*dpr);
+      const ctx = cv.getContext('2d');
+      ctx.scale(dpr,dpr);
+      ctx.lineWidth = 10; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#2b2b2b';
+      st.ctx = ctx;
+      const pos = (e)=>{ const cr=cv.getBoundingClientRect(); return {x:e.clientX-cr.left, y:e.clientY-cr.top}; };
+      let drawing=false, last=null;
+      cv.addEventListener('pointerdown', e=>{ e.preventDefault(); drawing=true; last=pos(e); st.curPts=[last]; try{cv.setPointerCapture(e.pointerId);}catch(_){} });
+      cv.addEventListener('pointermove', e=>{ if(!drawing) return; e.preventDefault(); const p=pos(e); st.curPts.push(p); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; });
+      const up=()=>{ if(drawing){ drawing=false; checkStroke(); } };
+      cv.addEventListener('pointerup', up);
+      cv.addEventListener('pointercancel', up);
+      cv.addEventListener('pointerleave', up);
+      st.redraw = ()=>{
+        ctx.clearRect(0,0,st.W,st.H);
+        ctx.beginPath();
+        for(const stroke of st.doneStrokes){ for(let i=0;i<stroke.length;i++){ if(i===0) ctx.moveTo(stroke[i].x,stroke[i].y); else ctx.lineTo(stroke[i].x,stroke[i].y); } }
+        ctx.stroke();
+        if(st.curPts.length){ ctx.beginPath(); for(let i=0;i<st.curPts.length;i++){ if(i===0) ctx.moveTo(st.curPts[i].x,st.curPts[i].y); else ctx.lineTo(st.curPts[i].x,st.curPts[i].y); } ctx.stroke(); }
+      };
+    }
+    // 字库笔顺中线（0-1024 坐标、y 向上）映射到画布坐标
+    const data = HANZI_DATA[st.char];
+    st.medians = (data && data.medians||[]).map(s=>s.map(([x,y])=>({x:x/1024*st.W, y:(1-y/1024)*st.H})));
+    st.R = 32 * leniency;
+    setFB(`跟着闪亮的笔画，写第 1 / ${st.strokeTotal} 笔 ✍️`,'');
     setTimeout(()=>{ try{ st.writer.highlightStroke(0); }catch(e){} }, 150);
+  }
+
+  // 写下一笔：孩子提笔时检测这一笔的笔迹是否匹配当前笔的笔顺中线
+  function checkStroke(){
+    if(!st.quizOn || !st.curPts || st.curPts.length<3) return;
+    const median = st.medians[st.strokeCur];
+    const ok = median && matchStroke(st.curPts, median, st.R);
+    if(ok){
+      st.doneStrokes.push(st.curPts);  // 保留孩子的笔迹
+      st.curPts = [];
+      st.strokeCur++;
+      renderDots();
+      if(st.strokeCur >= st.strokeTotal){ onComplete(); }
+      else {
+        setFB(praise[Math.floor(Math.random()*praise.length)]+'  第'+st.strokeCur+'笔正确','good');
+        setTimeout(()=>{ try{ st.writer.highlightStroke(st.strokeCur); }catch(e){} }, 60);
+        setTimeout(()=>{ if(st.quizOn) setFB(`写第 ${st.strokeCur+1} / ${st.strokeTotal} 笔，跟着提示写`,''); }, 900);
+      }
+    } else {
+      st.mistakes++;
+      st.curPts = [];                  // 这一笔没写好，清掉重画（已通过的笔迹保留）
+      if(st.redraw) st.redraw();
+      setFB(cheer[Math.min(st.mistakes-1, cheer.length-1)], 'bad');
+    }
+  }
+
+  // 整字写完：保留田字格里孩子写的全部笔迹，显示结果
+  function onComplete(){
+    st.quizOn = false;
+    const totalM = st.mistakes;
+    const stars = totalM===0?3:(totalM<=2?2:1);
+    st.results.push({char:st.char, stars, mistakes:totalM});
+    markWrite(st.char, stars);
+    if(totalM>0) addWrong(st.char,'write',{bookId,ui,li});
+    const starStr = '⭐'.repeat(stars)+'☆'.repeat(3-stars);
+    const msg = totalM===0? '零错误，完美！':(totalM<=2? '非常棒，就差一点点！':'完成！多练几遍更棒');
+    $$('.stroke-dots, .write-tools').forEach(el=>el.style.display='none');
+    setFB(msg+'  看看自己写的字～','good');
+    const wrap = $('.writer-stage');
+    const banner = document.createElement('div');
+    banner.className='result-banner';
+    banner.innerHTML = `<div class="stars">${starStr}</div>
+      <div class="msg">${msg}</div>
+      <div class="sub">「${st.char}」共 ${st.strokeTotal} 笔 · 本次错误 ${totalM} 次</div>
+      <button class="btn green" id="btn-next">${st.idx+1>=queue.length?'完成 🎉':'下一个字 →'}</button>
+      <button class="btn ghost small" id="btn-again" style="margin-left:8px">↺ 再写一遍</button>`;
+    wrap.after(banner);
+    $('#btn-next').onclick = ()=>{ st.idx++; renderCurrent(); };
+    $('#btn-again').onclick = ()=>{ st.results.pop(); renderCurrent(); };
+    speak(totalM===0?'太棒了':'真不错');
   }
 
   function bindTools(){
     $('#btn-hint').onclick = ()=>{
-      // 展示当前笔的前序帧提示
-      const n = Math.min(st.strokeCur+1, st.strokeTotal);
-      setFB(`第${n}笔长这样 →  ${'　'}`, '');
-      const fb=$('#fb');
-      fb.insertAdjacentHTML('beforeend', `<span style="display:inline-block;vertical-align:middle">${frameSVG(st.char, n, 40)}</span><span style="font-size:13px;color:#8a94a6">（第${n}格 = 前${n}笔）</span>`);
+      // 重新提示当前这一笔（沿笔画路径闪亮，含运笔方向）
+      try{ st.writer.highlightStroke(st.strokeCur); }catch(e){}
+      setFB(`第 ${st.strokeCur+1} / ${st.strokeTotal} 笔长这样，跟着写`,'');
     };
     $('#btn-full').onclick = ()=>{
       if(!st.writer) return;
-      try{ st.writer.cancelQuiz(); }catch(e){}
-      st.quizOn=false;
-      st.writer.animateCharacter({ onComplete: ()=>{ setTimeout(()=>{ st.writer.cancelQuiz(); renderCurrent(); }, 800); } });
+      st.quizOn = false;
+      st.writer.animateCharacter({ onComplete: ()=>{ setTimeout(()=>{ renderCurrent(); }, 800); } });
       setFB('完整笔顺演示，看完重新写一遍~');
     };
     $('#btn-restart').onclick = ()=>renderCurrent();
@@ -719,7 +768,7 @@ function vWrite(bookId, ui, li, query){
       localStorage.setItem('hz_leniency', leniency);
       $('#btn-len').textContent = `🎯 宽容度 ${leniency.toFixed(2)}`;
       toast(`书写宽容度：${leniency.toFixed(2)}（数值越大越容易通过）`);
-      if(st.quizOn){ try{st.writer.cancelQuiz();}catch(e){} startQuiz(); }
+      st.R = 32 * leniency;
     };
   }
 
@@ -759,7 +808,7 @@ function vDict(bookId, ui, li){
     cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
     const ctx=cv.getContext('2d');
     ctx.scale(dpr,dpr);
-    ctx.lineWidth=11; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#2b2b2b';
+    ctx.lineWidth=14; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#2b2b2b';
     let drawing=false, last=null;
     const pos=(e)=>{ const r=cv.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; };
     const start=(e)=>{ e.preventDefault(); drawing=true; last=pos(e); try{cv.setPointerCapture(e.pointerId);}catch(_){} };
